@@ -2,7 +2,7 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies for native modules
+# Install dependencies for native moduless
 RUN apk add --no-cache python3 make g++
 
 # Copy package files
