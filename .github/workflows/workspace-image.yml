@@ -1,0 +1,81 @@
+name: Workspace Image CI/CD
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'workspace-images/**'
+      - '.github/workflows/workspace-image.yml'
+  workflow_dispatch:  # Manual trigger
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  # Build and update workspace Docker image
+  build:
+    name: Build Workspace Image
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build Workspace Image on EC2
+        run: |
+          aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Build Workspace Image - ${{ github.sha }}" \
+            --parameters 'commands=[
+              "echo \"========================================\"",
+              "echo \"  Building Workspace Docker Image...\"",
+              "echo \"========================================\"",
+              "cd /home/ubuntu/estro-ai",
+              "git fetch origin",
+              "git reset --hard origin/main || git reset --hard origin/master",
+              "docker build -t estro-ai-workspace:latest ./workspace-images/base/",
+              "docker images | grep estro-ai-workspace",
+              "echo \"========================================\"",
+              "echo \"  Workspace Image Built!\"",
+              "echo \"========================================\""
+            ]' \
+            --output text \
+            --query "Command.CommandId"
+          
+          echo "Waiting for Docker build..."
+          sleep 120
+
+      - name: Check Build Status
+        run: |
+          COMMAND_ID=$(aws ssm list-commands \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+            --max-results 1 \
+            --query "Commands[0].CommandId" \
+            --output text)
+          
+          STATUS=$(aws ssm get-command-invocation \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+            --command-id "$COMMAND_ID" \
+            --query "Status" \
+            --output text)
+          
+          echo "Build Status: $STATUS"
+          
+          if [ "$STATUS" == "Success" ]; then
+            echo "✅ Workspace image built successfully!"
+          else
+            echo "❌ Build may have issues."
+            aws ssm get-command-invocation \
+              --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+              --command-id "$COMMAND_ID" \
+              --query "StandardOutputContent" \
+              --output text
+          fi

@@ -1,0 +1,135 @@
+name: Frontend CI/CD
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'frontend/**'
+  workflow_dispatch:  # Manual trigger
+
+env:
+  NODE_VERSION: '20'
+  AWS_REGION: us-east-1
+
+jobs:
+  # Job 1: Test & Build
+  test:
+    name: Test & Build Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run linter
+        run: |
+          cd frontend
+          npm run lint --if-present
+
+      - name: Run tests
+        run: |
+          cd frontend
+          npm test --if-present
+        env:
+          NODE_ENV: test
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.API_URL }}
+
+  # Job 2: Deploy
+  deploy:
+    name: Deploy Frontend
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy Frontend via SSM
+        run: |
+          aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy Frontend - ${{ github.sha }}" \
+            --parameters 'commands=[
+              "echo \"========================================\"",
+              "echo \"  Deploying Frontend...\"",
+              "echo \"========================================\"",
+              "cd /home/ubuntu/estro-ai",
+              "git fetch origin",
+              "git reset --hard origin/main || git reset --hard origin/master",
+              "cd frontend",
+              "npm ci",
+              "npm run build",
+              "pm2 restart estro-frontend || pm2 start npm --name estro-frontend -- start",
+              "pm2 save",
+              "sleep 3",
+              "curl -f http://localhost:3000 && echo \"Frontend healthy!\" || echo \"Health check failed\"",
+              "echo \"========================================\"",
+              "echo \"  Frontend Deployment Complete!\"",
+              "echo \"========================================\""
+            ]' \
+            --output text \
+            --query "Command.CommandId"
+          
+          echo "Waiting for build and deployment..."
+          sleep 60
+
+      - name: Check Deployment Status
+        run: |
+          # Get the latest command
+          COMMAND_ID=$(aws ssm list-commands \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+            --max-results 1 \
+            --query "Commands[0].CommandId" \
+            --output text)
+          
+          # Get command status
+          STATUS=$(aws ssm get-command-invocation \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+            --command-id "$COMMAND_ID" \
+            --query "Status" \
+            --output text)
+          
+          echo "Deployment Status: $STATUS"
+          
+          if [ "$STATUS" == "Success" ]; then
+            echo "✅ Frontend deployed successfully!"
+          else
+            echo "❌ Deployment may have issues. Check EC2 logs."
+            # Get output for debugging
+            aws ssm get-command-invocation \
+              --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+              --command-id "$COMMAND_ID" \
+              --query "StandardOutputContent" \
+              --output text
+          fi
