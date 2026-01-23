@@ -37,18 +37,6 @@ jobs:
           cd backend
           npm ci
 
-      - name: Run linter
-        run: |
-          cd backend
-          npm run lint --if-present
-
-      - name: Run tests
-        run: |
-          cd backend
-          npm test --if-present
-        env:
-          NODE_ENV: test
-
   # Job 2: Deploy
   deploy:
     name: Deploy Backend

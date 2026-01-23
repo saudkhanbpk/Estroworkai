@@ -85,7 +85,7 @@ export default function Home() {
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">
-              Enter Project Name
+              Enter Project Name's
             </label>
             <input
               type="text"
