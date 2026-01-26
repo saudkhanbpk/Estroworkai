@@ -65,10 +65,23 @@ jobs:
               "echo \"========================================\"",
               "echo \"  Deploying Backend...\"",
               "echo \"========================================\"",
-              "sudo -u ubuntu bash -c \"cd /home/ubuntu/estro-ai && git fetch origin && git reset --hard origin/main || git reset --hard origin/master\"",
-              "sudo -u ubuntu bash -c \"cd /home/ubuntu/estro-ai/backend && npm ci --production\"",
-              "sudo -u ubuntu bash -c \"cd /home/ubuntu/estro-ai/backend && pm2 restart estro-backend || pm2 start src/index.js --name estro-backend\"",
-              "sudo -u ubuntu bash -c \"pm2 save\"",
+              "sudo su - ubuntu -c \"echo '==============================' >> /var/log/deploy.log\"",
+              "sudo su - ubuntu -c \"echo 'Deploy started at: $(date)' >> /var/log/deploy.log\"",
+              "sudo su - ubuntu -c \"pwd >> /var/log/deploy.log\"",
+              "sudo su - ubuntu -c \"whoami >> /var/log/deploy.log\"",
+
+              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai && git fetch origin >> /var/log/deploy.log 2>&1\"",
+              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai && git reset --hard origin/main >> /var/log/deploy.log 2>&1\"",
+              
+              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai/backend && npm ci --production >> /var/log/deploy.log 2>&1\"",
+              
+              "sudo su - ubuntu -c \"pm2 list >> /var/log/deploy.log 2>&1\"",
+              "sudo su - ubuntu -c \"pm2 delete estro-backend >> /var/log/deploy.log 2>&1 || true\"",
+              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai/backend && pm2 start src/index.js --name estro-backend >> /var/log/deploy.log 2>&1\"",
+              "sudo su - ubuntu -c \"pm2 save >> /var/log/deploy.log 2>&1\"",
+              "sudo su - ubuntu -c \"pm2 list >> /var/log/deploy.log 2>&1\"",
+              
+              "sudo su - ubuntu -c \"echo 'Deploy finished at: $(date)' >> /var/log/deploy.log\"",
               "sleep 3",
               "curl -f http://localhost:5000/api/health && echo \"Backend healthy!\" || echo \"Health check failed\"",
               "echo \"========================================\"",

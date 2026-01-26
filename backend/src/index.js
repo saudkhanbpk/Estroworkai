@@ -89,7 +89,7 @@ app.use('/api/terminal', terminalRoutes);
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
-app.get('/api/test', (req, res) => {
+app.get('/api/tests', (req, res) => {
   res.json({ status: 'okk', timestamp: new Date().toISOString() });
 });
 // Error handling middleware

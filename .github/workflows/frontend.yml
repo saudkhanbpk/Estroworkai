@@ -73,7 +73,7 @@ jobs:
               "echo \"  Deploying Frontend...\"",
               "echo \"========================================\"",
               "sudo -u ubuntu bash -c \"cd /home/ubuntu/estro-ai && git fetch origin && git reset --hard origin/main || git reset --hard origin/master\"",
-              "sudo -u ubuntu bash -c \"cd /home/ubuntu/estro-ai/frontend && npm ci\"",
+              "sudo -u ubuntu bash -c \"cd /home/ubuntu/estro-ai/frontend && npm install\"",
               "sudo -u ubuntu bash -c \"cd /home/ubuntu/estro-ai/frontend && npm run build\"",
               "sudo -u ubuntu bash -c \"cd /home/ubuntu/estro-ai/frontend && pm2 restart estro-frontend || pm2 start npm --name estro-frontend -- start\"",
               "sudo -u ubuntu bash -c \"pm2 save\"",
