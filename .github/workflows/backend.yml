@@ -65,23 +65,14 @@ jobs:
               "echo \"========================================\"",
               "echo \"  Deploying Backend...\"",
               "echo \"========================================\"",
-              "sudo su - ubuntu -c \"echo '==============================' >> /var/log/deploy.log\"",
-              "sudo su - ubuntu -c \"pwd >> /var/log/deploy.log\"",
-              "sudo su - ubuntu -c \"whoami >> /var/log/deploy.log\"",
-
-              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai && git fetch origin >> /var/log/deploy.log 2>&1\"",
-              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai && git reset --hard origin/main >> /var/log/deploy.log 2>&1\"",
-              
-              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai/backend && npm ci --production >> /var/log/deploy.log 2>&1\"",
-              
-              "sudo su - ubuntu -c \"pm2 list >> /var/log/deploy.log 2>&1\"",
-              "sudo su - ubuntu -c \"pm2 delete estro-backend >> /var/log/deploy.log 2>&1 || true\"",
-              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai/backend && pm2 start src/index.js --name estro-backend >> /var/log/deploy.log 2>&1\"",
-              "sudo su - ubuntu -c \"pm2 save >> /var/log/deploy.log 2>&1\"",
-              "sudo su - ubuntu -c \"pm2 list >> /var/log/deploy.log 2>&1\"",
-                          
-              "sleep 3",
-              "curl -f http://localhost:5000/api/health && echo \"Backend healthy!\" || echo \"Health check failed\"",
+              "cd /home/ubuntu/estro-ai && sudo -u ubuntu git fetch origin",
+              "cd /home/ubuntu/estro-ai && sudo -u ubuntu git reset --hard origin/main",
+              "cd /home/ubuntu/estro-ai/backend && sudo -u ubuntu bash -c \"source /home/ubuntu/.nvm/nvm.sh && npm ci --production\"",
+              "sudo -u ubuntu bash -c \"source /home/ubuntu/.nvm/nvm.sh && pm2 delete estro-backend || true\"",
+              "cd /home/ubuntu/estro-ai/backend && sudo -u ubuntu bash -c \"source /home/ubuntu/.nvm/nvm.sh && pm2 start src/index.js --name estro-backend\"",
+              "sudo -u ubuntu bash -c \"source /home/ubuntu/.nvm/nvm.sh && pm2 save\"",
+              "sleep 5",
+              "curl -sf http://localhost:5000/api/health && echo \"Backend healthy!\" || echo \"Health check failed\"",
               "echo \"========================================\"",
               "echo \"  Backend Deployment Complete!\"",
               "echo \"========================================\""
