@@ -55,37 +55,31 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy Backend via SSM
+            - name: Deploy Backend via SSM
         run: |
           aws ssm send-command \
             --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy Backend - ${{ github.sha }}" \
             --parameters 'commands=[
-              "echo \"========================================\"",
-              "echo \"  Deploying Backend...\"",
-              "echo \"========================================\"",
-              "sudo su - ubuntu -c \"echo '==============================' >> /var/log/deploy.log\"",
-              "sudo su - ubuntu -c \"pwd >> /var/log/deploy.log\"",
-              "sudo su - ubuntu -c \"whoami >> /var/log/deploy.log\"",
+              "sudo mkdir -p /var/log/deploy",
+              "sudo chown ubuntu:ubuntu /var/log/deploy",
+              "echo \"===== Deploy started $(date) =====\" >> /var/log/deploy/backend.log",
 
-              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai && git fetch origin >> /var/log/deploy.log 2>&1\"",
-              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai && git reset --hard origin/main >> /var/log/deploy.log 2>&1\"",
-              
-              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai/backend && npm ci --production >> /var/log/deploy.log 2>&1\"",
-              
-              "sudo su - ubuntu -c \"pm2 list >> /var/log/deploy.log 2>&1\"",
-              "sudo su - ubuntu -c \"pm2 delete estro-backend >> /var/log/deploy.log 2>&1 || true\"",
-              "sudo su - ubuntu -c \"cd /home/ubuntu/estro-ai/backend && pm2 start src/index.js --name estro-backend >> /var/log/deploy.log 2>&1\"",
-              "sudo su - ubuntu -c \"pm2 save >> /var/log/deploy.log 2>&1\"",
-              "sudo su - ubuntu -c \"pm2 list >> /var/log/deploy.log 2>&1\"",
-              
-              "sleep 3",
-              "curl -f http://localhost:5000/api/health && echo \"Backend healthy!\" || echo \"Health check failed\"",
-              "echo \"========================================\"",
-              "echo \"  Backend Deployment Complete!\"",
-              "echo \"========================================\""
-            ]' \
+              "sudo -u ubuntu bash -lc \"cd /home/ubuntu/estro-ai && git fetch origin >> /var/log/deploy/backend.log 2>&1\"",
+              "sudo -u ubuntu bash -lc \"cd /home/ubuntu/estro-ai && git reset --hard origin/main >> /var/log/deploy/backend.log 2>&1\"",
+
+              "sudo -u ubuntu bash -lc \"cd /home/ubuntu/estro-ai/backend && /home/ubuntu/.nvm/versions/node/*/bin/npm ci --production >> /var/log/deploy/backend.log 2>&1\"",
+
+              "sudo -u ubuntu bash -lc \"/home/ubuntu/.nvm/versions/node/*/bin/pm2 delete estro-backend >> /var/log/deploy/backend.log 2>&1 || true\"",
+              "sudo -u ubuntu bash -lc \"cd /home/ubuntu/estro-ai/backend && /home/ubuntu/.nvm/versions/node/*/bin/pm2 start src/index.js --name estro-backend >> /var/log/deploy/backend.log 2>&1\"",
+              "sudo -u ubuntu bash -lc \"/home/ubuntu/.nvm/versions/node/*/bin/pm2 save >> /var/log/deploy/backend.log 2>&1\"",
+              "sudo -u ubuntu bash -lc \"/home/ubuntu/.nvm/versions/node/*/bin/pm2 list >> /var/log/deploy/backend.log 2>&1\"",
+
+              "curl -f http://localhost:5000/api/health >> /var/log/deploy/backend.log 2>&1 || echo \"Health failed\" >> /var/log/deploy/backend.log",
+
+              "echo \"===== Deploy finished $(date) =====\" >> /var/log/deploy/backend.log"
+            ]'\
             --output text \
             --query "Command.CommandId"
           
