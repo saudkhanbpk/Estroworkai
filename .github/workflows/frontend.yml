@@ -14,7 +14,7 @@ on:
 
 env:
   NODE_VERSION: '20'
-  AWS_REGION: us-east-1
+  AWS_REGION: me-central-1
 
 jobs:
   # Job 1: Test & Build

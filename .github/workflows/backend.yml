@@ -13,8 +13,8 @@ on:
   workflow_dispatch:  # Manual trigger
 
 env:
-  NODE_VERSION: '20'
-  AWS_REGION: us-east-1
+  NODE_VERSION: '24'
+  AWS_REGION: me-central-1
 
 jobs:
   # Job 1: Test
