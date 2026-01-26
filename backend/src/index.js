@@ -89,7 +89,9 @@ app.use('/api/terminal', terminalRoutes);
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
-
+app.get('/api/health/check', (req, res) => {
+  res.json({ status: 'okk', timestamp: new Date().toISOString() });
+});
 // Error handling middleware
 app.use((err, req, res, next) => {
   logger.error('Unhandled error:', err);
@@ -101,7 +103,6 @@ setupWebSocket(io);
 
 // Connect to MongoDB and start server
 const PORT = process.env.PORT;
-// testing connection to mongodb and code changes on this file
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
     logger.info('Connected to MongoDB');

@@ -73,7 +73,7 @@ jobs:
               "echo \"  Deploying Frontend...\"",
               "echo \"========================================\"",
               "cd /home/ubuntu/estro-ai",
-              "git fetch origin",
+              "git pull origin main || git pull origin master",
               "git reset --hard origin/main || git reset --hard origin/master",
               "cd frontend",
               "npm ci",
