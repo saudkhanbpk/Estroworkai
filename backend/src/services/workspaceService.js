@@ -12,6 +12,44 @@ const isWindows = process.platform === 'win32';
 const WORKSPACE_BASE_PATH = process.env.WORKSPACE_BASE_PATH || (isWindows ? 'C:/estro-workspaces' : '/var/workspaces');
 
 /**
+ * Copy pre-built template to workspace (dependencies already installed)
+ */
+async function copyTemplateToWorkspace(containerId) {
+  try {
+    logger.info('Copying pre-built template to workspace...');
+    
+    // Copy template files to workspace (template has node_modules pre-installed)
+    const copyResult = await dockerUtils.execCommand(
+      containerId,
+      'cp -r /template/* /workspace/ && cp -r /template/node_modules /workspace/ 2>/dev/null || true',
+      { timeout: 30000 }
+    );
+    
+    if (copyResult.exitCode !== 0 && !copyResult.output?.includes('No such file')) {
+      logger.warn('Template copy warning:', copyResult.error || copyResult.output);
+    }
+    
+    // Verify template was copied
+    const verifyResult = await dockerUtils.execCommand(
+      containerId,
+      '[ -d /workspace/node_modules ] && [ -f /workspace/package.json ] && echo "OK" || echo "FAILED"',
+      { timeout: 5000 }
+    );
+    
+    if (verifyResult.output?.trim() === 'OK') {
+      logger.info('Template copied successfully with pre-installed dependencies');
+      return { success: true };
+    } else {
+      logger.warn('Template copy verification failed, will fall back to npm install');
+      return { success: false };
+    }
+  } catch (error) {
+    logger.error('Error copying template:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * Create a new workspace with isolated container
  */
 async function createWorkspace(userId, name, prompt) {
@@ -63,6 +101,14 @@ async function createWorkspace(userId, name, prompt) {
       workspace.previewUrl = `http://preview-${workspaceId}.${domain}`;
     }
     await workspace.save();
+    
+    // Copy pre-built template to workspace (includes node_modules)
+    const templateResult = await copyTemplateToWorkspace(containerInfo.containerId);
+    if (templateResult.success) {
+      logger.info('Workspace initialized with pre-built template');
+    } else {
+      logger.info('Template not available, AI will create project from scratch');
+    }
 
     logger.info(`Workspace created: ${workspaceId}`);
 
@@ -176,6 +222,160 @@ async function startAgent(workspaceId, io) {
       // Auto-start server for preview
       try {
         logger.info(`Auto-starting server for workspace: ${workspaceId}`);
+        
+        // First, verify dependencies are installed
+        logger.info('Verifying dependencies before starting server...');
+        const verification = await dockerUtils.verifyDependencies(workspace.containerId);
+        
+        if (!verification.installed) {
+          logger.warn(`Dependencies not installed. Missing: ${verification.missingPackages.join(', ')}`);
+          logger.info('Running npm install to install missing dependencies...');
+          
+          // Check if npm install is already running
+          const checkNpmProcess = await dockerUtils.execCommand(
+            workspace.containerId,
+            'ps aux | grep -E "npm install|npm i" | grep -v grep || echo "NOT_RUNNING"',
+            { timeout: 5000 }
+          );
+          
+          if (checkNpmProcess.output?.trim() !== 'NOT_RUNNING') {
+            logger.info('npm install is already running, waiting for it to complete...');
+            // Wait up to 5 minutes for npm install to complete
+            for (let i = 0; i < 30; i++) {
+              await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+              const stillRunning = await dockerUtils.execCommand(
+                workspace.containerId,
+                'ps aux | grep -E "npm install|npm i" | grep -v grep || echo "NOT_RUNNING"',
+                { timeout: 5000 }
+              );
+              if (stillRunning.output?.trim() === 'NOT_RUNNING') {
+                logger.info('npm install completed');
+                break;
+              }
+              if (i === 29) {
+                logger.warn('npm install still running after 5 minutes, proceeding anyway...');
+              }
+            }
+          } else {
+            // Run npm install with extended timeout
+            const npmInstallTimeout = parseInt(process.env.NPM_INSTALL_TIMEOUT) || 300000; // 5 minutes
+            logger.info(`Running npm install with ${npmInstallTimeout}ms timeout...`);
+            
+            io?.to(`workspace:${workspaceId}`).emit('agent:update', {
+              action: 'log',
+              message: 'Installing dependencies before starting server...',
+              ephemeral: false
+            });
+            
+            const installResult = await dockerUtils.execCommand(
+              workspace.containerId,
+              'cd /workspace && npm install --legacy-peer-deps',
+              { 
+                timeout: npmInstallTimeout,
+                onData: (data) => {
+                  io?.to(`workspace:${workspaceId}`).emit('agent:update', {
+                    action: 'log',
+                    message: data,
+                    ephemeral: true
+                  });
+                }
+              }
+            );
+            
+            if (installResult.exitCode !== 0) {
+              const errorMsg = installResult.error || installResult.output || '';
+              
+              // Check if it's the esbuild EACCES error
+              if (errorMsg.includes('esbuild/bin/esbuild') && errorMsg.includes('EACCES')) {
+                logger.warn('Detected esbuild EACCES error, attempting auto-fix...');
+                io?.to(`workspace:${workspaceId}`).emit('agent:update', {
+                  action: 'log',
+                  message: 'Fixing esbuild permissions...',
+                  ephemeral: false
+                });
+                
+                // Fix esbuild permissions
+                const fixResult = await dockerUtils.fixEsbuildPermissions(workspace.containerId);
+                
+                if (fixResult.success) {
+                  logger.info('esbuild permissions fixed, retrying npm install...');
+                  io?.to(`workspace:${workspaceId}`).emit('agent:update', {
+                    action: 'log',
+                    message: 'Retrying npm install after fixing permissions...',
+                    ephemeral: false
+                  });
+                  
+                  // Retry npm install
+                  const retryResult = await dockerUtils.execCommand(
+                    workspace.containerId,
+                    'cd /workspace && npm install --legacy-peer-deps',
+                    { 
+                      timeout: npmInstallTimeout,
+                      onData: (data) => {
+                        io?.to(`workspace:${workspaceId}`).emit('agent:update', {
+                          action: 'log',
+                          message: data,
+                          ephemeral: true
+                        });
+                      }
+                    }
+                  );
+                  
+                  if (retryResult.exitCode === 0) {
+                    logger.info('npm install succeeded after esbuild fix');
+                    // Continue to verification below
+                  } else {
+                    logger.error(`npm install still failed after esbuild fix: ${retryResult.error || retryResult.output}`);
+                    io?.to(`workspace:${workspaceId}`).emit('server:error', {
+                      errors: [{
+                        title: 'Dependency Installation Failed',
+                        message: retryResult.error || retryResult.output || 'npm install failed even after fixing esbuild',
+                        suggestion: 'Try running npm install manually in the terminal'
+                      }],
+                      autoFixApplied: true
+                    });
+                    throw new Error('Failed to install dependencies after esbuild fix');
+                  }
+                } else {
+                  logger.error(`Could not fix esbuild permissions: ${fixResult.message}`);
+                  io?.to(`workspace:${workspaceId}`).emit('server:error', {
+                    errors: [{
+                      title: 'Dependency Installation Failed',
+                      message: `esbuild permission error: ${errorMsg}`,
+                      suggestion: 'Try running: chmod +x node_modules/esbuild/bin/esbuild && npm rebuild esbuild'
+                    }],
+                    autoFixApplied: false
+                  });
+                  throw new Error('Failed to install dependencies - esbuild permission issue');
+                }
+              } else {
+                // Other npm install errors
+                logger.error(`npm install failed: ${errorMsg}`);
+                io?.to(`workspace:${workspaceId}`).emit('server:error', {
+                  errors: [{
+                    title: 'Dependency Installation Failed',
+                    message: errorMsg || 'npm install failed',
+                    suggestion: 'Try running npm install manually in the terminal'
+                  }],
+                  autoFixApplied: false
+                });
+                throw new Error('Failed to install dependencies');
+              }
+            }
+            
+            // Verify again after installation
+            const reVerification = await dockerUtils.verifyDependencies(workspace.containerId);
+            if (!reVerification.installed) {
+              logger.error(`Dependencies still missing after install: ${reVerification.missingPackages.join(', ')}`);
+              throw new Error(`Dependencies verification failed: ${reVerification.missingPackages.join(', ')}`);
+            }
+            
+            logger.info('Dependencies verified successfully');
+          }
+        } else {
+          logger.info(`Dependencies verified. Found packages: ${verification.packagesFound.join(', ')}`);
+        }
+        
         // Kill any existing processes
         await dockerUtils.execCommand(
           workspace.containerId,
@@ -193,37 +393,6 @@ async function startAgent(workspaceId, io) {
         if (checkVite.output?.trim() === 'VITE') {
           // Run Vite dev server with host flag to allow external access
           logger.info('Starting Vite dev server...');
-
-          // Check if vite is installed (the core package might be missing)
-          const checkViteInstalled = await dockerUtils.execCommand(
-            workspace.containerId,
-            '[ -d /workspace/node_modules/vite ] && echo "OK" || echo "MISSING"'
-          );
-
-          if (checkViteInstalled.output?.trim() === 'MISSING') {
-            logger.info('Vite package missing, running npm install...');
-            await dockerUtils.execCommand(
-              workspace.containerId,
-              'cd /workspace && rm -rf node_modules package-lock.json && npm install --legacy-peer-deps',
-              { timeout: 120000 }
-            );
-          }
-
-          // Check if @vitejs/plugin-react is installed (common missing dependency)
-          const checkPlugin = await dockerUtils.execCommand(
-            workspace.containerId,
-            '[ -d /workspace/node_modules/@vitejs/plugin-react ] && echo "OK" || echo "MISSING"'
-          );
-
-          if (checkPlugin.output?.trim() === 'MISSING') {
-            logger.info('Installing missing @vitejs/plugin-react...');
-            await dockerUtils.execCommand(
-              workspace.containerId,
-              'cd /workspace && npm install @vitejs/plugin-react --save-dev --legacy-peer-deps',
-              { timeout: 60000 }
-            );
-          }
-
           serverCommand = 'cd /workspace && npx vite --host 0.0.0.0 --port 3000';
         } else {
           // Fallback to static serve for vanilla HTML projects
@@ -274,11 +443,19 @@ async function startAgent(workspaceId, io) {
 
           // Fallback to npm install if no specific fixes
           if (fixes.length === 0) {
+            const npmInstallTimeout = parseInt(process.env.NPM_INSTALL_TIMEOUT) || 300000; // 5 minutes
+            logger.info('Running npm install as fallback fix...');
             await dockerUtils.execCommand(
               workspace.containerId,
-              'cd /workspace && npm install',
-              { timeout: 60000 }
+              'cd /workspace && npm install --legacy-peer-deps',
+              { timeout: npmInstallTimeout }
             );
+            
+            // Verify dependencies after install
+            const postFixVerification = await dockerUtils.verifyDependencies(workspace.containerId);
+            if (!postFixVerification.installed) {
+              logger.error(`Dependencies still missing after fix: ${postFixVerification.missingPackages.join(', ')}`);
+            }
           }
 
           await dockerUtils.execCommand(
@@ -517,6 +694,106 @@ Use updateFile to modify existing files, not writeFile.`;
       // Auto-restart server for preview
       try {
         logger.info(`Restarting server for workspace: ${workspaceId}`);
+        
+        // Verify dependencies before restarting server
+        logger.info('Verifying dependencies before restarting server...');
+        const verification = await dockerUtils.verifyDependencies(workspace.containerId);
+        
+        if (!verification.installed) {
+          logger.warn(`Dependencies not installed. Missing: ${verification.missingPackages.join(', ')}`);
+          logger.info('Running npm install to install missing dependencies...');
+          
+          const npmInstallTimeout = parseInt(process.env.NPM_INSTALL_TIMEOUT) || 300000; // 5 minutes
+          logger.info(`Running npm install with ${npmInstallTimeout}ms timeout...`);
+          
+          io?.to(`workspace:${workspaceId}`).emit('agent:update', {
+            action: 'log',
+            message: 'Installing dependencies before restarting server...',
+            ephemeral: false
+          });
+          
+          const installResult = await dockerUtils.execCommand(
+            workspace.containerId,
+            'cd /workspace && npm install --legacy-peer-deps',
+            { 
+              timeout: npmInstallTimeout,
+              onData: (data) => {
+                io?.to(`workspace:${workspaceId}`).emit('agent:update', {
+                  action: 'log',
+                  message: data,
+                  ephemeral: true
+                });
+              }
+            }
+          );
+          
+          if (installResult.exitCode !== 0) {
+            const errorMsg = installResult.error || installResult.output || '';
+            
+            // Check if it's the esbuild EACCES error
+            if (errorMsg.includes('esbuild/bin/esbuild') && errorMsg.includes('EACCES')) {
+              logger.warn('Detected esbuild EACCES error, attempting auto-fix...');
+              io?.to(`workspace:${workspaceId}`).emit('agent:update', {
+                action: 'log',
+                message: 'Fixing esbuild permissions...',
+                ephemeral: false
+              });
+              
+              // Fix esbuild permissions
+              const fixResult = await dockerUtils.fixEsbuildPermissions(workspace.containerId);
+              
+              if (fixResult.success) {
+                logger.info('esbuild permissions fixed, retrying npm install...');
+                io?.to(`workspace:${workspaceId}`).emit('agent:update', {
+                  action: 'log',
+                  message: 'Retrying npm install after fixing permissions...',
+                  ephemeral: false
+                });
+                
+                // Retry npm install
+                const retryResult = await dockerUtils.execCommand(
+                  workspace.containerId,
+                  'cd /workspace && npm install --legacy-peer-deps',
+                  { 
+                    timeout: npmInstallTimeout,
+                    onData: (data) => {
+                      io?.to(`workspace:${workspaceId}`).emit('agent:update', {
+                        action: 'log',
+                        message: data,
+                        ephemeral: true
+                      });
+                    }
+                  }
+                );
+                
+                if (retryResult.exitCode === 0) {
+                  logger.info('npm install succeeded after esbuild fix');
+                  // Continue to verification below
+                } else {
+                  logger.error(`npm install still failed after esbuild fix: ${retryResult.error || retryResult.output}`);
+                  throw new Error('Failed to install dependencies after esbuild fix');
+                }
+              } else {
+                logger.error(`Could not fix esbuild permissions: ${fixResult.message}`);
+                throw new Error('Failed to install dependencies - esbuild permission issue');
+              }
+            } else {
+              // Other npm install errors
+              logger.error(`npm install failed: ${errorMsg}`);
+              throw new Error('Failed to install dependencies');
+            }
+          }
+          
+          // Verify again after installation
+          const reVerification = await dockerUtils.verifyDependencies(workspace.containerId);
+          if (!reVerification.installed) {
+            logger.error(`Dependencies still missing after install: ${reVerification.missingPackages.join(', ')}`);
+            throw new Error(`Dependencies verification failed: ${reVerification.missingPackages.join(', ')}`);
+          }
+          
+          logger.info('Dependencies verified successfully');
+        }
+        
         await dockerUtils.execCommand(
           workspace.containerId,
           'pkill -f "node|vite|serve" 2>/dev/null || true'
@@ -531,38 +808,10 @@ Use updateFile to modify existing files, not writeFile.`;
 
         let serverCommand;
         if (checkVite.output?.trim() === 'VITE') {
-          // Check if vite is installed (the core package might be missing)
-          const checkViteInstalled = await dockerUtils.execCommand(
-            workspace.containerId,
-            '[ -d /workspace/node_modules/vite ] && echo "OK" || echo "MISSING"'
-          );
-
-          if (checkViteInstalled.output?.trim() === 'MISSING') {
-            logger.info('Vite package missing, running npm install...');
-            await dockerUtils.execCommand(
-              workspace.containerId,
-              'cd /workspace && rm -rf node_modules package-lock.json && npm install --legacy-peer-deps',
-              { timeout: 120000 }
-            );
-          }
-
-          // Check if @vitejs/plugin-react is installed
-          const checkPlugin = await dockerUtils.execCommand(
-            workspace.containerId,
-            '[ -d /workspace/node_modules/@vitejs/plugin-react ] && echo "OK" || echo "MISSING"'
-          );
-
-          if (checkPlugin.output?.trim() === 'MISSING') {
-            logger.info('Installing missing @vitejs/plugin-react...');
-            await dockerUtils.execCommand(
-              workspace.containerId,
-              'cd /workspace && npm install @vitejs/plugin-react --save-dev --legacy-peer-deps',
-              { timeout: 60000 }
-            );
-          }
-
+          logger.info('Starting Vite dev server...');
           serverCommand = 'cd /workspace && npx vite --host 0.0.0.0 --port 3000';
         } else {
+          logger.info('Starting static file server...');
           serverCommand = 'serve /workspace -l 3000';
         }
 
@@ -594,7 +843,19 @@ Use updateFile to modify existing files, not writeFile.`;
           }
 
           if (fixes.length === 0) {
-            await dockerUtils.execCommand(workspace.containerId, 'cd /workspace && npm install', { timeout: 60000 });
+            const npmInstallTimeout = parseInt(process.env.NPM_INSTALL_TIMEOUT) || 300000; // 5 minutes
+            logger.info('Running npm install as fallback fix...');
+            await dockerUtils.execCommand(
+              workspace.containerId, 
+              'cd /workspace && npm install --legacy-peer-deps', 
+              { timeout: npmInstallTimeout }
+            );
+            
+            // Verify dependencies after install
+            const postFixVerification = await dockerUtils.verifyDependencies(workspace.containerId);
+            if (!postFixVerification.installed) {
+              logger.error(`Dependencies still missing after fix: ${postFixVerification.missingPackages.join(', ')}`);
+            }
           }
 
           await dockerUtils.execCommand(workspace.containerId, `bash -c '${serverCommand} > /tmp/server.log 2>&1 &'`, { timeout: 5000 });

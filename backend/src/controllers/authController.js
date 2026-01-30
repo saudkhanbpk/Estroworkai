@@ -57,31 +57,46 @@ async function register(req, res) {
  */
 async function login(req, res) {
   try {
-    const { email, password } = req.body;
+    let { email, password } = req.body;
 
+    // 1️⃣ Validate input
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Find user
+    // 2️⃣ Normalize email (VERY IMPORTANT)
+    email = email.trim().toLowerCase();
+
+    // 3️⃣ Find user (passwordHash is included by default in schema)
     const user = await User.findOne({ email });
+
     if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      logger.warn(`Login attempt with non-existent email: ${email}`);
+      // Do not reveal whether email exists
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Check password
+    // 4️⃣ Compare password
     const isValid = await user.comparePassword(password);
+    
     if (!isValid) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      logger.warn(`Failed login attempt for: ${email}`);
     }
 
-    // Generate token
-    const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, {
-      expiresIn: JWT_EXPIRES_IN,
-    });
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
 
-    logger.info(`User logged in: ${email}`);
+    // 5️⃣ Generate JWT
+    const token = jwt.sign(
+      { id: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
 
+    logger.info(`User logged in: ${user.email}`);
+
+    // 6️⃣ Send response
     res.json({
       success: true,
       token,
@@ -91,11 +106,13 @@ async function login(req, res) {
         email: user.email,
       },
     });
+
   } catch (error) {
     logger.error('Login error:', error);
-    res.status(500).json({ error: 'Failed to login' });
+    res.status(500).json({ error: 'Server error during login' });
   }
 }
+
 
 /**
  * Get current user profile

@@ -2,7 +2,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const User = require('../models/User');
 
-const MONGODB_URI = "mongodb+srv://saudkhanbpk_db_user:dtM4BqDbJMen3f1D@cluster0.lwuztoy.mongodb.net/?appName=Cluster0" 
+const MONGODB_URI = "mongodb+srv://saudkhanbpk_db_user:dtM4BqDbJMen3f1D@cluster0.lwuztoy.mongodb.net/estro-ai?retryWrites=true&w=majority&appName=Cluster0" 
 
 async function seed() {
   try {
@@ -11,22 +11,37 @@ async function seed() {
     console.log('Connected to MongoDB');
 
     // Check if user already exists
-    const existingUser = await User.findOne({ email: 'umair.khan@bnbyond.com' });
+    const email = 'umair.khan@bnbyond.com';
+    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
 
     if (existingUser) {
       console.log('User already exists, updating password...');
       existingUser.passwordHash = '12344321';
       await existingUser.save();
       console.log('Password updated successfully');
+      console.log(`User ID: ${existingUser._id}`);
+      console.log(`User Email: ${existingUser.email}`);
     } else {
       // Create new user
       const user = new User({
         name: 'Umair Khan',
-        email: 'umair.khan@bnbyond.com',
+        email: email.toLowerCase().trim(),
         passwordHash: '12344321',
       });
       await user.save();
       console.log('User created successfully');
+      console.log(`User ID: ${user._id}`);
+      console.log(`User Email: ${user.email}`);
+    }
+    
+    // Verify user exists
+    const verifyUser = await User.findOne({ email: email.toLowerCase().trim() });
+    if (verifyUser) {
+      console.log(`\n✓ Verified: User found in database`);
+      console.log(`  Database: ${mongoose.connection.db.databaseName}`);
+      console.log(`  Collection: ${User.collection.name}`);
+    } else {
+      console.log(`\n✗ Error: User not found after creation!`);
     }
 
     console.log('\n--- User Details ---');

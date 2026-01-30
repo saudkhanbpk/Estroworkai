@@ -55,7 +55,7 @@ try {
   docker = new Docker(dockerOptions); // Create anyway for error handling
 }
 
-const WORKSPACE_IMAGE = process.env.WORKSPACE_IMAGE || 'estro-ai-workspace:latest';
+const WORKSPACE_IMAGE = process.env.WORKSPACE_IMAGE || 'estro-ai-workspaces:latest';
 const WORKSPACE_NETWORK = process.env.WORKSPACE_NETWORK || 'workspace-network';
 const CONTAINER_MEMORY_LIMIT = parseInt(process.env.CONTAINER_MEMORY_LIMIT) || 512 * 1024 * 1024; // 512MB default
 
@@ -145,13 +145,21 @@ async function createContainer(workspaceId, options = {}) {
 
 /**
  * Execute a command inside a container with timeout
- */
-/**
- * Execute a command inside a container with timeout
+ * Supports timeouts up to 10 minutes (600000ms)
  */
 async function execCommand(containerId, command, options = {}) {
-  const timeout = options.timeout || 30000; // 30 second default timeout
+  // Support timeouts up to 10 minutes (600000ms), default 30 seconds
+  const maxTimeout = 600000; // 10 minutes
+  const defaultTimeout = 30000; // 30 seconds
+  const requestedTimeout = options.timeout || defaultTimeout;
+  const timeout = Math.min(requestedTimeout, maxTimeout);
+  
   const onData = options.onData;
+
+  // Log timeout for long-running commands
+  if (timeout > 60000) {
+    logger.info(`Executing command with extended timeout: ${timeout}ms (${Math.round(timeout / 1000)}s)`);
+  }
 
   try {
     const container = docker.getContainer(containerId);
@@ -169,16 +177,20 @@ async function execCommand(containerId, command, options = {}) {
       let output = '';
       let errorOutput = '';
       let resolved = false;
+      let lastDataTime = Date.now();
 
       // Timeout handler
       const timeoutId = setTimeout(() => {
         if (!resolved) {
           resolved = true;
           stream.destroy();
+          const elapsed = Math.round((Date.now() - lastDataTime) / 1000);
+          logger.warn(`Command timed out after ${timeout}ms: ${command.substring(0, 100)}`);
           resolve({
             output: output.trim(),
-            error: 'Command timed out',
+            error: `Command timed out after ${Math.round(timeout / 1000)} seconds`,
             exitCode: -1,
+            timedOut: true,
           });
         }
       }, timeout);
@@ -188,15 +200,21 @@ async function execCommand(containerId, command, options = {}) {
         const rawData = chunk.slice(8);
         const data = rawData.toString();
         output += data;
+        lastDataTime = Date.now();
 
         // Stream data if callback provided
         if (onData) {
-          onData(data);
+          try {
+            onData(data);
+          } catch (e) {
+            logger.warn('Error in onData callback:', e.message);
+          }
         }
       });
 
       stream.on('error', (err) => {
         errorOutput += err.message;
+        logger.error('Stream error:', err.message);
       });
 
       stream.on('end', async () => {
@@ -205,12 +223,20 @@ async function execCommand(containerId, command, options = {}) {
         clearTimeout(timeoutId);
         try {
           const execInfo = await exec.inspect();
-          resolve({
+          const result = {
             output: output.trim(),
-            error: errorOutput,
+            error: errorOutput || undefined,
             exitCode: execInfo.ExitCode,
-          });
+          };
+          
+          // Log command completion for long-running commands
+          if (timeout > 60000) {
+            logger.info(`Command completed with exit code ${execInfo.ExitCode}`);
+          }
+          
+          resolve(result);
         } catch (e) {
+          logger.error('Error inspecting exec:', e.message);
           resolve({
             output: output.trim(),
             error: errorOutput || e.message,
@@ -311,6 +337,164 @@ async function getContainerStatus(containerId) {
   }
 }
 
+/**
+ * Fix esbuild binary permissions issue (EACCES error)
+ * @param {string} containerId - Docker container ID
+ * @returns {Promise<{success: boolean, message: string}>}
+ */
+async function fixEsbuildPermissions(containerId) {
+  try {
+    logger.info('Attempting to fix esbuild permissions...');
+    
+    // Fix permissions on esbuild binary if it exists
+    const fixResult = await execCommand(
+      containerId,
+      'cd /workspace && find node_modules/esbuild -type f -name "esbuild" -exec chmod +x {} \\; 2>/dev/null || true',
+      { timeout: 10000 }
+    );
+    
+    // Rebuild esbuild to ensure it's properly installed
+    const rebuildResult = await execCommand(
+      containerId,
+      'cd /workspace && npm rebuild esbuild --force 2>&1 || true',
+      { timeout: 60000 }
+    );
+    
+    // Verify esbuild binary is now executable
+    const verifyResult = await execCommand(
+      containerId,
+      '[ -x /workspace/node_modules/esbuild/bin/esbuild ] && echo "EXECUTABLE" || echo "NOT_EXECUTABLE"',
+      { timeout: 5000 }
+    );
+    
+    if (verifyResult.output?.trim() === 'EXECUTABLE') {
+      logger.info('esbuild permissions fixed successfully');
+      return { success: true, message: 'esbuild binary is now executable' };
+    } else {
+      logger.warn('esbuild binary still not executable after fix attempt');
+      return { success: false, message: 'Could not fix esbuild permissions' };
+    }
+  } catch (error) {
+    logger.error('Error fixing esbuild permissions:', error);
+    return { success: false, message: error.message };
+  }
+}
+
+/**
+ * Verify that dependencies are installed in the workspace
+ * @param {string} containerId - Docker container ID
+ * @returns {Promise<{installed: boolean, packagesFound: string[], missingPackages: string[], details: object}>}
+ */
+async function verifyDependencies(containerId) {
+  try {
+    // Check if node_modules directory exists
+    const checkNodeModules = await execCommand(
+      containerId,
+      '[ -d /workspace/node_modules ] && echo "EXISTS" || echo "MISSING"',
+      { timeout: 5000 }
+    );
+
+    const hasNodeModules = checkNodeModules.output?.trim() === 'EXISTS';
+
+    // Check for package.json
+    const checkPackageJson = await execCommand(
+      containerId,
+      '[ -f /workspace/package.json ] && echo "EXISTS" || echo "MISSING"',
+      { timeout: 5000 }
+    );
+
+    const hasPackageJson = checkPackageJson.output?.trim() === 'EXISTS';
+
+    if (!hasPackageJson) {
+      return {
+        installed: false,
+        packagesFound: [],
+        missingPackages: ['package.json'],
+        details: { reason: 'No package.json found' }
+      };
+    }
+
+    // Read package.json to check required dependencies
+    let packageJson = null;
+    try {
+      const pkgResult = await readFile(containerId, '/workspace/package.json');
+      if (pkgResult.exitCode === 0 && pkgResult.output) {
+        packageJson = JSON.parse(pkgResult.output);
+      }
+    } catch (e) {
+      logger.warn('Failed to parse package.json:', e.message);
+    }
+
+    const packagesFound = [];
+    const missingPackages = [];
+
+    if (hasNodeModules) {
+      // Check for common required packages
+      const commonPackages = ['vite', 'react', 'react-dom', '@vitejs/plugin-react'];
+      
+      for (const pkg of commonPackages) {
+        const checkPkg = await execCommand(
+          containerId,
+          `[ -d /workspace/node_modules/${pkg} ] && echo "EXISTS" || echo "MISSING"`,
+          { timeout: 5000 }
+        );
+        
+        if (checkPkg.output?.trim() === 'EXISTS') {
+          packagesFound.push(pkg);
+        } else if (packageJson && (
+          (packageJson.dependencies && packageJson.dependencies[pkg]) ||
+          (packageJson.devDependencies && packageJson.devDependencies[pkg])
+        )) {
+          missingPackages.push(pkg);
+        }
+      }
+
+      // Check for package-lock.json or yarn.lock
+      const checkLock = await execCommand(
+        containerId,
+        '[ -f /workspace/package-lock.json ] || [ -f /workspace/yarn.lock ] && echo "EXISTS" || echo "MISSING"',
+        { timeout: 5000 }
+      );
+      const hasLockFile = checkLock.output?.trim() === 'EXISTS';
+
+      // If node_modules exists and has at least some packages, consider it installed
+      // But warn if critical packages are missing
+      if (packagesFound.length > 0 || hasLockFile) {
+        return {
+          installed: true,
+          packagesFound,
+          missingPackages,
+          details: {
+            hasNodeModules: true,
+            hasLockFile,
+            totalPackagesFound: packagesFound.length
+          }
+        };
+      }
+    }
+
+    // If we get here, dependencies are not properly installed
+    return {
+      installed: false,
+      packagesFound,
+      missingPackages: missingPackages.length > 0 ? missingPackages : ['node_modules'],
+      details: {
+        hasNodeModules,
+        hasPackageJson,
+        reason: hasNodeModules ? 'node_modules exists but required packages missing' : 'node_modules directory not found'
+      }
+    };
+  } catch (error) {
+    logger.error('Error verifying dependencies:', error);
+    return {
+      installed: false,
+      packagesFound: [],
+      missingPackages: ['verification_failed'],
+      details: { error: error.message }
+    };
+  }
+}
+
 module.exports = {
   docker,
   createContainer,
@@ -320,4 +504,6 @@ module.exports = {
   readFile,
   listFiles,
   getContainerStatus,
+  verifyDependencies,
+  fixEsbuildPermissions,
 };

@@ -102,8 +102,8 @@ app.use((err, req, res, next) => {
 setupWebSocket(io);
 
 // Connect to MongoDB and start server
-const PORT = process.env.PORT;
-mongoose.connect(process.env.MONGODB_URI)
+const PORT = process.env.PORT || 5000;
+mongoose.connect("mongodb+srv://saudkhanbpk_db_user:dtM4BqDbJMen3f1D@cluster0.lwuztoy.mongodb.net/estro-ai?retryWrites=true&w=majority&appName=Cluster0")
   .then(() => {
     logger.info('Connected to MongoDB');
     server.listen(PORT, () => {

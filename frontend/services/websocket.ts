@@ -68,6 +68,9 @@ class WebSocketService {
       'editor:update',
       'editor:cursor',
       'terminal:output',
+      'workspace:updated',
+      'message:new',
+      'server:error',
       'file:change',
     ];
 

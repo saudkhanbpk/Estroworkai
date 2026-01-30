@@ -151,34 +151,125 @@ function createCodeAgent(containerId, onUpdate, mode = AgentMode.CREATE) {
           if (normalizedCmd.includes('npm install') && executedCommands.size > 0) {
             const hasNpmInstall = Array.from(executedCommands).some(cmd => cmd.includes('npm install'));
             if (hasNpmInstall) {
-              return 'npm install was already run. Dependencies are installed.';
+              // Verify dependencies are actually installed
+              const verification = await dockerUtils.verifyDependencies(containerId);
+              if (verification.installed) {
+                return 'npm install was already run. Dependencies are installed.';
+              } else {
+                logger.warn('npm install was run but dependencies not found, retrying...');
+                // Remove from executed commands to allow retry
+                executedCommands.delete(normalizedCmd);
+              }
             }
           }
 
           executedCommands.add(normalizedCmd);
-          // Increase timeout for npm install (can take a while)
-          const timeout = normalizedCmd.includes('npm install') ? 120000 : 30000;
+          
+          // Increase timeout for npm install (5 minutes, configurable)
+          const npmInstallTimeout = parseInt(process.env.NPM_INSTALL_TIMEOUT) || 300000; // 5 minutes default
+          const timeout = normalizedCmd.includes('npm install') ? npmInstallTimeout : 30000;
+          const isNpmInstall = normalizedCmd.includes('npm install');
+          const maxRetries = isNpmInstall ? (parseInt(process.env.NPM_INSTALL_MAX_RETRIES) || 2) : 0;
 
-          const result = await dockerUtils.execCommand(containerId, actualCommand, {
-            timeout,
-            onData: (data) => {
-              // Send streaming updates
-              onUpdate?.({
-                action: 'log',
-                message: data,
-                ephemeral: true
+          // Retry logic for npm install
+          let lastError = null;
+          let lastResult = null;
+          
+          for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            if (attempt > 0) {
+              const retryDelay = Math.min(10000 * Math.pow(2, attempt - 1), 30000); // Exponential backoff, max 30s
+              logger.info(`Retrying npm install (attempt ${attempt + 1}/${maxRetries + 1}) after ${retryDelay}ms delay...`);
+              onUpdate?.({ 
+                action: 'log', 
+                message: `Retrying npm install (attempt ${attempt + 1}/${maxRetries + 1})...`,
+                ephemeral: true 
               });
+              await new Promise(resolve => setTimeout(resolve, retryDelay));
             }
-          });
 
-          onUpdate?.({ action: 'runCommand', command: actualCommand, success: result.exitCode === 0 });
-          logger.info(`Agent ran command: ${actualCommand}`);
+            lastResult = await dockerUtils.execCommand(containerId, actualCommand, {
+              timeout,
+              onData: (data) => {
+                // Send streaming updates
+                onUpdate?.({
+                  action: 'log',
+                  message: data,
+                  ephemeral: true
+                });
+              }
+            });
 
-          if (result.exitCode !== 0) {
-            return `Command failed: ${result.error || result.output}`;
+            // Check if command succeeded
+            if (lastResult.exitCode === 0) {
+              // For npm install, verify dependencies were actually installed
+              if (isNpmInstall) {
+                const verification = await dockerUtils.verifyDependencies(containerId);
+                if (verification.installed) {
+                  onUpdate?.({ action: 'runCommand', command: actualCommand, success: true });
+                  logger.info(`Agent ran command successfully: ${actualCommand}`);
+                  return `Command completed successfully. Dependencies verified: ${verification.packagesFound.join(', ')}.`;
+                } else {
+                  // Installation completed but dependencies not found - might be a real error
+                  if (attempt < maxRetries) {
+                    lastError = `npm install completed but dependencies not found. Missing: ${verification.missingPackages.join(', ')}. Retrying...`;
+                    logger.warn(lastError);
+                    continue;
+                  } else {
+                    return `Command completed but dependencies verification failed. Missing: ${verification.missingPackages.join(', ')}. Output: ${lastResult.output}`;
+                  }
+                }
+              } else {
+                // Non-npm install command succeeded
+                onUpdate?.({ action: 'runCommand', command: actualCommand, success: true });
+                logger.info(`Agent ran command successfully: ${actualCommand}`);
+                return lastResult.output || 'Command completed successfully.';
+              }
+            } else {
+              // Command failed
+              const isTimeout = lastResult.error === 'Command timed out' || lastResult.exitCode === -1;
+              const errorMsg = lastResult.error || lastResult.output || '';
+              
+              // Check for esbuild EACCES error and auto-fix
+              if (isNpmInstall && errorMsg.includes('esbuild/bin/esbuild') && errorMsg.includes('EACCES') && attempt < maxRetries) {
+                logger.warn('Detected esbuild EACCES error in agent, attempting auto-fix...');
+                onUpdate?.({ 
+                  action: 'log', 
+                  message: 'Fixing esbuild permissions and retrying...',
+                  ephemeral: false 
+                });
+                
+                // Fix esbuild permissions
+                const fixResult = await dockerUtils.fixEsbuildPermissions(containerId);
+                
+                if (fixResult.success) {
+                  logger.info('esbuild permissions fixed, retrying npm install...');
+                  // Don't increment attempt counter, just retry
+                  continue;
+                } else {
+                  logger.warn(`Could not fix esbuild permissions: ${fixResult.message}`);
+                  // Continue to normal retry logic
+                }
+              }
+              
+              if (isTimeout && attempt < maxRetries) {
+                lastError = `Command timed out after ${timeout}ms. Retrying...`;
+                logger.warn(lastError);
+                continue;
+              } else {
+                // Final attempt failed or non-timeout error
+                onUpdate?.({ action: 'runCommand', command: actualCommand, success: false });
+                const finalErrorMsg = isTimeout 
+                  ? `Command timed out after ${timeout}ms (${attempt + 1} attempts). This may indicate slow network or many dependencies.`
+                  : `Command failed: ${errorMsg}`;
+                return finalErrorMsg;
+              }
+            }
           }
-          return result.output || 'Command completed successfully.';
+
+          // Should not reach here, but handle it
+          return `Command failed after ${maxRetries + 1} attempts: ${lastError || lastResult?.error || 'Unknown error'}`;
         } catch (error) {
+          logger.error(`Error running command: ${error.message}`);
           return `Error running command: ${error.message}`;
         }
       },
@@ -186,50 +277,115 @@ function createCodeAgent(containerId, onUpdate, mode = AgentMode.CREATE) {
   ];
 
   // Different system prompts based on mode
-  const createModePrompt = `You are an expert web developer. Create complete, working React applications.
+  const createModePrompt = `You are an ELITE frontend developer known for creating stunning, award-winning websites. Create PRODUCTION-QUALITY React applications.
+
+IMPORTANT: The workspace already has a Vite + React template with:
+- package.json (react, react-dom, vite, @vitejs/plugin-react)
+- vite.config.js (configured for React)
+- index.html (with Tailwind CDN)
+- src/main.jsx (React entry point)
+- src/App.jsx (basic component)
+- node_modules (dependencies pre-installed)
 
 CRITICAL RULES:
-1. Use writeFile to create files - DO NOT output code as text
-2. DO NOT use npx, npm init, or any CLI scaffolding commands
-3. After creating ALL files, run "npm install" ONCE
-4. Do NOT run "npm run dev" - server starts automatically
-5. Use EXACT versions specified below to avoid dependency conflicts
+1. DO NOT create package.json, vite.config.js, index.html, or main.jsx - they already exist
+2. DO NOT run "npm install" - dependencies are already installed
+3. DO NOT run "npm run dev" - server starts automatically
+4. ONLY modify or create files in /workspace/src/ folder
+5. Use writeFile to create NEW component files
+6. Use updateFile to modify EXISTING files (read first with readFile)
 
-DESIGN REQUIREMENTS:
-- Mobile-first responsive design with Tailwind CSS
-- Use Tailwind classes: sm:, md:, lg: for breakpoints
-- Modern UI: rounded-lg, shadow-md, hover effects, transitions
+WORKFLOW:
+1. First, use listFiles to see current project structure
+2. Read /workspace/src/App.jsx to see the current code
+3. Create your application by updating /workspace/src/App.jsx with a COMPLETE, STUNNING design
+4. DONE - respond with summary
 
-CREATE THESE FILES IN ORDER:
+=== DESIGN REQUIREMENTS (CRITICAL - FOLLOW EXACTLY) ===
 
-1. /workspace/package.json (use these EXACT versions):
-Name: use project name, type: module
-Scripts: dev: vite, build: vite build, preview: vite preview
-Dependencies: react: 18.2.0, react-dom: 18.2.0
-DevDependencies: vite: 5.0.0, @vitejs/plugin-react: 4.2.0
+CREATE VISUALLY STUNNING, PROFESSIONAL WEBSITES WITH:
 
-2. /workspace/vite.config.js:
-Import defineConfig from vite, import react from @vitejs/plugin-react
-Export default defineConfig with plugins: [react()]
+1. MODERN COLOR SCHEME:
+   - Use gradient backgrounds: bg-gradient-to-r, bg-gradient-to-br
+   - Dark theme: bg-gray-900, bg-slate-900, bg-zinc-900
+   - Accent colors: blue-500, purple-500, cyan-500, emerald-500
+   - Text: text-white, text-gray-100, text-gray-400
 
-3. /workspace/index.html:
-DOCTYPE html, lang en, meta charset utf-8, meta viewport
-Title, div id root, script type module src /src/main.jsx
-Add Tailwind CDN: script src https://cdn.tailwindcss.com
+2. BEAUTIFUL NAVBAR (REQUIRED):
+   - Sticky/fixed position: fixed top-0 w-full z-50
+   - Glassmorphism: bg-white/10 backdrop-blur-md
+   - Logo on left, nav links on right
+   - Mobile hamburger menu with useState
+   - Hover effects: hover:text-blue-400 transition-colors
 
-4. /workspace/src/main.jsx:
-Import React, ReactDOM, App, render App to root
+3. HERO SECTION (REQUIRED):
+   - Full viewport height: min-h-screen
+   - Gradient background or animated gradient
+   - Large bold heading with gradient text: bg-clip-text text-transparent bg-gradient-to-r
+   - Animated typing effect or fade-in animations
+   - Call-to-action buttons with hover effects
+   - Floating/animated decorative elements
 
-5. /workspace/src/App.jsx:
-Create the main component with full responsive Tailwind styling
+4. ANIMATIONS (USE THESE):
+   - Fade in: animate-fade-in (define with @keyframes in style tag)
+   - Slide up: animate-slide-up
+   - Pulse: animate-pulse
+   - Bounce: animate-bounce
+   - Hover scale: hover:scale-105 transition-transform duration-300
+   - Hover glow: hover:shadow-lg hover:shadow-blue-500/25
 
-6. Run command: npm install
+5. CARDS & COMPONENTS:
+   - Glassmorphism cards: bg-white/5 backdrop-blur-sm border border-white/10
+   - Rounded corners: rounded-2xl or rounded-3xl
+   - Shadows: shadow-xl shadow-black/20
+   - Hover effects: hover:-translate-y-2 transition-all duration-300
+   - Icons using emoji or Unicode symbols
 
-7. DONE - respond with summary of what was created
+6. SECTIONS TO INCLUDE:
+   - Hero with animated text and CTA
+   - About/Bio section with image placeholder
+   - Skills/Technologies with icon cards
+   - Projects grid with beautiful cards (image, title, description, links)
+   - Testimonials or achievements
+   - Contact section with form or social links
+   - Footer with links and copyright
+
+7. RESPONSIVE DESIGN:
+   - Mobile first: base styles for mobile
+   - Tablet: md: prefix
+   - Desktop: lg: prefix
+   - Grid: grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3
+
+8. TYPOGRAPHY:
+   - Large headings: text-4xl md:text-5xl lg:text-6xl font-bold
+   - Gradient text: bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500
+   - Body text: text-gray-300 text-lg leading-relaxed
+
+EXAMPLE CODE PATTERNS:
+
+// Animated gradient text
+<h1 className="text-5xl md:text-7xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-purple-500 to-pink-500">
+  John Doe
+</h1>
+
+// Glassmorphism card with hover
+<div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-6 hover:-translate-y-2 hover:shadow-xl hover:shadow-purple-500/10 transition-all duration-300">
+
+// Gradient button
+<button className="px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full font-semibold hover:shadow-lg hover:shadow-blue-500/25 transition-all duration-300 hover:scale-105">
+
+// Sticky navbar with glassmorphism
+<nav className="fixed top-0 w-full z-50 bg-black/20 backdrop-blur-md border-b border-white/10">
+
+// Custom animations - use inline style tag with template literal
+// Example: Add animations using Tailwind's built-in: animate-pulse, animate-bounce
+// Or use CSS transitions: transition-all duration-300 ease-in-out
+
+CREATE A COMPLETE, PRODUCTION-READY WEBSITE - NOT A BASIC TEMPLATE!
 
 Workspace path: /workspace`;
 
-  const updateModePrompt = `You are an expert web developer. Modify EXISTING code - do NOT recreate the project.
+  const updateModePrompt = `You are an ELITE frontend developer. Enhance and improve EXISTING code with stunning visuals.
 
 RULES:
 1. Use listFiles first to see project structure
@@ -245,11 +401,15 @@ WORKFLOW:
 3. updateFile with your changes
 4. DONE - respond with what you changed
 
-DESIGN IMPROVEMENTS (when asked to improve UI):
-- Use Tailwind responsive classes: sm:, md:, lg:
-- Add hover states, transitions, shadows
-- Use flexbox/grid for layouts
-- Better spacing and visual hierarchy
+DESIGN ENHANCEMENTS (APPLY THESE):
+- Gradient backgrounds: bg-gradient-to-r from-blue-500 to-purple-600
+- Glassmorphism: bg-white/10 backdrop-blur-md border border-white/10
+- Animations: hover:scale-105, hover:-translate-y-2, transition-all duration-300
+- Shadows with color: shadow-xl shadow-purple-500/20
+- Gradient text: bg-clip-text text-transparent bg-gradient-to-r
+- Smooth transitions on all interactive elements
+- Modern rounded corners: rounded-2xl, rounded-3xl
+- Professional spacing: generous padding and margins
 
 Example for "improve UI":
 1. listFiles /workspace
