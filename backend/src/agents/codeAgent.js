@@ -5,6 +5,7 @@ const { ChatPromptTemplate, MessagesPlaceholder } = require('@langchain/core/pro
 const { z } = require('zod');
 const dockerUtils = require('../utils/docker');
 const logger = require('../utils/logger');
+const unsplashService = require('../services/unsplash');
 
 /**
  * Agent modes
@@ -164,7 +165,7 @@ function createCodeAgent(containerId, onUpdate, mode = AgentMode.CREATE) {
           }
 
           executedCommands.add(normalizedCmd);
-          
+
           // Increase timeout for npm install (5 minutes, configurable)
           const npmInstallTimeout = parseInt(process.env.NPM_INSTALL_TIMEOUT) || 300000; // 5 minutes default
           const timeout = normalizedCmd.includes('npm install') ? npmInstallTimeout : 30000;
@@ -174,15 +175,15 @@ function createCodeAgent(containerId, onUpdate, mode = AgentMode.CREATE) {
           // Retry logic for npm install
           let lastError = null;
           let lastResult = null;
-          
+
           for (let attempt = 0; attempt <= maxRetries; attempt++) {
             if (attempt > 0) {
               const retryDelay = Math.min(10000 * Math.pow(2, attempt - 1), 30000); // Exponential backoff, max 30s
               logger.info(`Retrying npm install (attempt ${attempt + 1}/${maxRetries + 1}) after ${retryDelay}ms delay...`);
-              onUpdate?.({ 
-                action: 'log', 
+              onUpdate?.({
+                action: 'log',
                 message: `Retrying npm install (attempt ${attempt + 1}/${maxRetries + 1})...`,
-                ephemeral: true 
+                ephemeral: true
               });
               await new Promise(resolve => setTimeout(resolve, retryDelay));
             }
@@ -228,19 +229,19 @@ function createCodeAgent(containerId, onUpdate, mode = AgentMode.CREATE) {
               // Command failed
               const isTimeout = lastResult.error === 'Command timed out' || lastResult.exitCode === -1;
               const errorMsg = lastResult.error || lastResult.output || '';
-              
+
               // Check for esbuild EACCES error and auto-fix
               if (isNpmInstall && errorMsg.includes('esbuild/bin/esbuild') && errorMsg.includes('EACCES') && attempt < maxRetries) {
                 logger.warn('Detected esbuild EACCES error in agent, attempting auto-fix...');
-                onUpdate?.({ 
-                  action: 'log', 
+                onUpdate?.({
+                  action: 'log',
                   message: 'Fixing esbuild permissions and retrying...',
-                  ephemeral: false 
+                  ephemeral: false
                 });
-                
+
                 // Fix esbuild permissions
                 const fixResult = await dockerUtils.fixEsbuildPermissions(containerId);
-                
+
                 if (fixResult.success) {
                   logger.info('esbuild permissions fixed, retrying npm install...');
                   // Don't increment attempt counter, just retry
@@ -250,7 +251,7 @@ function createCodeAgent(containerId, onUpdate, mode = AgentMode.CREATE) {
                   // Continue to normal retry logic
                 }
               }
-              
+
               if (isTimeout && attempt < maxRetries) {
                 lastError = `Command timed out after ${timeout}ms. Retrying...`;
                 logger.warn(lastError);
@@ -258,7 +259,7 @@ function createCodeAgent(containerId, onUpdate, mode = AgentMode.CREATE) {
               } else {
                 // Final attempt failed or non-timeout error
                 onUpdate?.({ action: 'runCommand', command: actualCommand, success: false });
-                const finalErrorMsg = isTimeout 
+                const finalErrorMsg = isTimeout
                   ? `Command timed out after ${timeout}ms (${attempt + 1} attempts). This may indicate slow network or many dependencies.`
                   : `Command failed: ${errorMsg}`;
                 return finalErrorMsg;
@@ -274,6 +275,25 @@ function createCodeAgent(containerId, onUpdate, mode = AgentMode.CREATE) {
         }
       },
     }),
+
+    new DynamicStructuredTool({
+      name: 'searchPhotos',
+      description: 'Search for high-quality professional photos on Unsplash. Returns a list of photo objects with URLs and descriptions. Use these for <img> tags in your website.',
+      schema: z.object({
+        query: z.string().describe('The search query for images, e.g. "coffee shop", "modern office", "nature"'),
+        perPage: z.number().default(5).describe('Number of photos to return (default 5)'),
+      }),
+      func: async ({ query, perPage }) => {
+        try {
+          const photos = await unsplashService.searchPhotos(query, perPage);
+          onUpdate?.({ action: 'searchPhotos', query, count: photos.length, success: true });
+          return JSON.stringify(photos, null, 2);
+        } catch (error) {
+          logger.error(`searchPhotos error: ${error.message}`);
+          return `Error searching photos: ${error.message}`;
+        }
+      },
+    }),
   ];
 
   // Different system prompts based on mode
@@ -286,6 +306,14 @@ IMPORTANT: The workspace already has a Vite + React template with:
 - src/main.jsx (React entry point)
 - src/App.jsx (basic component)
 - node_modules (dependencies pre-installed)
+
+AVAILABLE TOOLS:
+- writeFile: Create new files
+- readFile: Read existing files
+- updateFile: Update existing files
+- listFiles: List project structure
+- runCommand: Execute shell commands
+- searchPhotos: Search for high-quality images from Unsplash (USE THESE FOR STUNNING VISUALS)
 
 CRITICAL RULES:
 1. DO NOT create package.json, vite.config.js, index.html, or main.jsx - they already exist
@@ -346,6 +374,13 @@ CREATE VISUALLY STUNNING, PROFESSIONAL WEBSITES WITH:
    - About/Bio section with image placeholder
    - Skills/Technologies with icon cards
    - Projects grid with beautiful cards (image, title, description, links)
+   - Testimonials or achievements
+
+9. IMAGES (REQUIRED):
+   - Use the searchPhotos tool to find relevant, high-quality images
+   - Use real Unsplash URLs in <img> tags
+   - Add proper alt descriptions
+   - Use object-cover and rounded-xl for beautiful image presentation
    - Testimonials or achievements
    - Contact section with form or social links
    - Footer with links and copyright

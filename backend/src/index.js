@@ -1,4 +1,11 @@
 const path = require('path');
+const dns = require('dns');
+// Set DNS result order to convert default from 'verbatim' to 'ipv4first' to fix Node 17+ connection issues
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch (error) {
+  // Ignore
+}
 require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 const express = require('express');
 const http = require('http');
@@ -52,19 +59,19 @@ app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
-    
+
     const allowedOrigins = [
       process.env.FRONTEND_URL || 'http://localhost:3000',
       'http://localhost:3000',
       'http://localhost',
     ];
-    
+
     // In production, allow EC2 domain
     if (process.env.NODE_ENV === 'production' && process.env.DOMAIN) {
       allowedOrigins.push(`http://${process.env.DOMAIN}`);
       allowedOrigins.push(`https://${process.env.DOMAIN}`);
     }
-    
+
     if (allowedOrigins.includes(origin) || origin.includes('localhost')) {
       callback(null, true);
     } else {
@@ -103,7 +110,10 @@ setupWebSocket(io);
 
 // Connect to MongoDB and start server
 const PORT = process.env.PORT || 5000;
-mongoose.connect("mongodb+srv://saudkhanbpk_db_user:dtM4BqDbJMen3f1D@cluster0.lwuztoy.mongodb.net/estro-ai?retryWrites=true&w=majority&appName=Cluster0")
+mongoose.connect(process.env.MONGODB_URI, {
+  serverSelectionTimeoutMS: 30000,
+  family: 4,
+})
   .then(() => {
     logger.info('Connected to MongoDB');
     server.listen(PORT, () => {

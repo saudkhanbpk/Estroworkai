@@ -2,7 +2,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const User = require('../models/User');
 
-const MONGODB_URI = "mongodb+srv://saudkhanbpk_db_user:dtM4BqDbJMen3f1D@cluster0.lwuztoy.mongodb.net/estro-ai?retryWrites=true&w=majority&appName=Cluster0" 
+const MONGODB_URI = process.env.MONGODB_URI;
 
 async function seed() {
   try {
@@ -33,7 +33,7 @@ async function seed() {
       console.log(`User ID: ${user._id}`);
       console.log(`User Email: ${user.email}`);
     }
-    
+
     // Verify user exists
     const verifyUser = await User.findOne({ email: email.toLowerCase().trim() });
     if (verifyUser) {
