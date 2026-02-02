@@ -340,13 +340,19 @@ CREATE VISUALLY STUNNING, PROFESSIONAL WEBSITES WITH:
    - Text: text-white, text-gray-100, text-gray-400
 
 2. BEAUTIFUL NAVBAR (REQUIRED):
-   - Sticky/fixed position: fixed top-0 w-full z-50
-   - Glassmorphism: bg-white/10 backdrop-blur-md
+   - Sticky position: sticky top-0 w-full z-50
+   - Glassmorphism: bg-black/20 backdrop-blur-lg border-b border-white/10
    - Logo on left, nav links on right
    - Mobile hamburger menu with useState
+   - Hover effects: hover:text-blue-400 transition-all duration-300
+
+3. FOOTER (REQUIRED):
+   - Position: relative w-full mt-auto py-10
+   - Glassmorphism: bg-white/5 backdrop-blur-md border-t border-white/10
+   - Copyright text, Social media links, and Quick links
    - Hover effects: hover:text-blue-400 transition-colors
 
-3. HERO SECTION (REQUIRED):
+4. HERO SECTION (REQUIRED):
    - Full viewport height: min-h-screen
    - Gradient background or animated gradient
    - Large bold heading with gradient text: bg-clip-text text-transparent bg-gradient-to-r
@@ -354,7 +360,7 @@ CREATE VISUALLY STUNNING, PROFESSIONAL WEBSITES WITH:
    - Call-to-action buttons with hover effects
    - Floating/animated decorative elements
 
-4. ANIMATIONS (USE THESE):
+5. ANIMATIONS (USE THESE):
    - Fade in: animate-fade-in (define with @keyframes in style tag)
    - Slide up: animate-slide-up
    - Pulse: animate-pulse
@@ -362,21 +368,21 @@ CREATE VISUALLY STUNNING, PROFESSIONAL WEBSITES WITH:
    - Hover scale: hover:scale-105 transition-transform duration-300
    - Hover glow: hover:shadow-lg hover:shadow-blue-500/25
 
-5. CARDS & COMPONENTS:
+6. CARDS & COMPONENTS:
    - Glassmorphism cards: bg-white/5 backdrop-blur-sm border border-white/10
    - Rounded corners: rounded-2xl or rounded-3xl
    - Shadows: shadow-xl shadow-black/20
    - Hover effects: hover:-translate-y-2 transition-all duration-300
    - Icons using emoji or Unicode symbols
 
-6. SECTIONS TO INCLUDE:
+7. SECTIONS TO INCLUDE:
    - Hero with animated text and CTA
    - About/Bio section with image placeholder
    - Skills/Technologies with icon cards
    - Projects grid with beautiful cards (image, title, description, links)
    - Testimonials or achievements
 
-9. IMAGES (REQUIRED):
+8. IMAGES (REQUIRED):
    - Use the searchPhotos tool to find relevant, high-quality images
    - Use real Unsplash URLs in <img> tags
    - Add proper alt descriptions
@@ -385,13 +391,19 @@ CREATE VISUALLY STUNNING, PROFESSIONAL WEBSITES WITH:
    - Contact section with form or social links
    - Footer with links and copyright
 
-7. RESPONSIVE DESIGN:
+  9. PAGES & NAVIGATION (REQUIRED):
+   - Home, About, Contact, Projects, Blog, Services
+   - Since react-router-dom is not pre-installed, use a 'currentPage' state variable in App.jsx to switch between components/sections
+   - Include working links in the Navbar that update this state
+   - Ensure each 'page' has a unique, beautiful layout
+
+10. RESPONSIVE DESIGN (REQUIRED):
    - Mobile first: base styles for mobile
    - Tablet: md: prefix
    - Desktop: lg: prefix
    - Grid: grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3
 
-8. TYPOGRAPHY:
+11. TYPOGRAPHY:
    - Large headings: text-4xl md:text-5xl lg:text-6xl font-bold
    - Gradient text: bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500
    - Body text: text-gray-300 text-lg leading-relaxed
