@@ -78,7 +78,7 @@ async function login(req, res) {
 
     // 4️⃣ Compare password
     const isValid = await user.comparePassword(password);
-    
+
     if (!isValid) {
       logger.warn(`Failed login attempt for: ${email}`);
     }
@@ -150,9 +150,80 @@ function authenticate(req, res, next) {
   }
 }
 
+
+/**
+ * SSO: Verify a short-lived token issued by Estrowork backend.
+ * Creates the user in EstroworkAI if they don't have an account yet.
+ * POST /api/auth/sso/verify-token
+ */
+async function ssoVerify(req, res) {
+  try {
+    const { ssoToken } = req.body;
+
+    if (!ssoToken) {
+      return res.status(400).json({ error: 'SSO token is required' });
+    }
+
+    const SSO_SECRET = process.env.SSO_SECRET;
+    if (!SSO_SECRET) {
+      logger.error('SSO_SECRET is not set in environment variables');
+      return res.status(500).json({ error: 'SSO not configured on server' });
+    }
+
+    let payload;
+    try {
+      payload = jwt.verify(ssoToken, SSO_SECRET);
+    } catch (e) {
+      logger.warn(`SSO token verification failed: ${e.message}`);
+      return res.status(401).json({ error: 'Invalid or expired SSO token' });
+    }
+
+    if (payload.source !== 'estrowork') {
+      return res.status(401).json({ error: 'Invalid SSO token source' });
+    }
+
+    const email = payload.email.trim().toLowerCase();
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      // Auto-create the user — they verified their identity via Estrowork
+      logger.info(`[SSO] Auto-creating EstroworkAI user for: ${email}`);
+      user = new User({
+        name: payload.name || email.split('@')[0],
+        email,
+        // Random hash — user can set a password later if needed
+        passwordHash: require('crypto').randomBytes(32).toString('hex'),
+      });
+      await user.save();
+    } else {
+      logger.info(`[SSO] Existing EstroworkAI user found: ${email}`);
+    }
+
+    const token = jwt.sign(
+      { id: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+      },
+    });
+  } catch (error) {
+    logger.error('SSO verify error:', error);
+    res.status(500).json({ error: 'SSO verification failed' });
+  }
+}
+
 module.exports = {
   register,
   login,
   getProfile,
   authenticate,
+  ssoVerify,
 };

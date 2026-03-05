@@ -54,6 +54,9 @@ const io = new Server(server, {
 // Middleware
 app.use(helmet({
   contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false,
+  crossOriginResourcePolicy: false,
+  crossOriginOpenerPolicy: false,
+  frameguard: false
 }));
 app.use(cors({
   origin: (origin, callback) => {

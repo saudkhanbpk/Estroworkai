@@ -18,6 +18,29 @@ export default function Home() {
     setCheckingAuth(false);
   }, []);
 
+  // If `q` is present in the URL and user is authenticated, prefill prompt and auto-submit
+  useEffect(() => {
+    const qParam = router.query.q;
+    if (!qParam) return;
+
+    const qString = Array.isArray(qParam) ? qParam.join(' ') : String(qParam);
+
+    // If still checking auth, wait until done
+    if (checkingAuth) return;
+
+    // If not authenticated, do nothing (existing effect will redirect to login)
+    if (!isAuthenticated) return;
+
+    // Prefill and auto-submit once
+    setPrompt(qString);
+
+    // small delay to ensure state has updated
+    setTimeout(() => {
+      // call handleSubmit programmatically (mock event)
+      handleSubmit({ preventDefault: () => {} } as any);
+    }, 200);
+  }, [router.query.q, checkingAuth, isAuthenticated]);
+
   useEffect(() => {
     if (!checkingAuth && !isAuthenticated) {
       router.push('/login');
