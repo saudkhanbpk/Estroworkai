@@ -21,46 +21,60 @@ export default function Home() {
   // If `q` is present in the URL and user is authenticated, prefill prompt and auto-submit
   useEffect(() => {
     const qParam = router.query.q;
+    const ssoToken = router.query.sso_token;
     if (!qParam) return;
 
-    const qString = Array.isArray(qParam) ? qParam.join(' ') : String(qParam);
+    // If still checking auth or SSO is in progress, wait
+    if (checkingAuth || ssoToken) return;
 
-    // If still checking auth, wait until done
-    if (checkingAuth) return;
-
-    // If not authenticated, do nothing (existing effect will redirect to login)
+    // If not authenticated, the other effect will handle redirect
     if (!isAuthenticated) return;
 
+    const qString = Array.isArray(qParam) ? qParam.join(' ') : String(qParam);
+    
     // Prefill and auto-submit once
     setPrompt(qString);
 
     // small delay to ensure state has updated
-    setTimeout(() => {
-      // call handleSubmit programmatically (mock event)
-      handleSubmit({ preventDefault: () => {} } as any);
-    }, 200);
-  }, [router.query.q, checkingAuth, isAuthenticated]);
+    const timer = setTimeout(() => {
+      submitProject(projectName, qString);
+      
+      // Clear q from URL so it doesn't re-run on refresh
+      const { q: _removed, ...restQuery } = router.query;
+      router.replace({ pathname: router.pathname, query: restQuery }, undefined, {
+        shallow: true,
+      });
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [router.query.q, router.query.sso_token, checkingAuth, isAuthenticated]);
 
   useEffect(() => {
-    if (!checkingAuth && !isAuthenticated) {
+    const ssoToken = router.query.sso_token;
+    // Don't redirect to login if we are still checking auth OR if an SSO token is present
+    if (!checkingAuth && !isAuthenticated && !ssoToken) {
       router.push('/login');
     }
-  }, [checkingAuth, isAuthenticated, router]);
+  }, [checkingAuth, isAuthenticated, router.query.sso_token, router]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!prompt.trim() || !projectName.trim()) return;
+  const submitProject = async (name: string, p: string) => {
+    if (!p.trim() || !name.trim()) return;
 
     setLoading(true);
     setError('');
 
     try {
-      const response = await api.createWorkspace(projectName, prompt);
+      const response = await api.createWorkspace(name, p);
       router.push(`/workspace/${response.workspace.id}`);
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to create workspace');
       setLoading(false);
     }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitProject(projectName, prompt);
   };
 
   const handleLogout = () => {

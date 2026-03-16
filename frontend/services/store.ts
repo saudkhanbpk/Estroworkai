@@ -7,6 +7,7 @@ interface Workspace {
   status: string;
   previewUrl: string | null;
   containerId: string | null;
+  assignedToOrganization?: boolean;
   files: Array<{ path: string; type: string; lastModified: Date }>;
 }
 
@@ -66,10 +67,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
 // Auth store
 interface AuthState {
-  user: { id: string; name: string; email: string } | null;
+  user: { id: string; name: string; email: string; role: string } | null;
   token: string | null;
   isAuthenticated: boolean;
-  setAuth: (user: { id: string; name: string; email: string }, token: string) => void;
+  setAuth: (user: { id: string; name: string; email: string; role: string }, token: string) => void;
   logout: () => void;
   initFromStorage: () => void;
 }

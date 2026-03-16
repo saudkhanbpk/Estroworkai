@@ -1,3 +1,4 @@
+const jwt = require('jsonwebtoken');
 const workspaceService = require('../services/workspaceService');
 const codeValidator = require('../services/codeValidator');
 const logger = require('../utils/logger');
@@ -328,6 +329,94 @@ async function getServerLogs(req, res) {
   }
 }
 
+/**
+ * Assign workspace to organization in main Estrowork system
+ */
+async function assignToOrganization(req, res) {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const email = req.user.email;
+
+    const workspace = await workspaceService.getWorkspace(id);
+    if (!workspace) {
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+
+    if (workspace.userId.toString() !== userId.toString()) {
+      return res.status(403).json({ error: 'Not authorized to assign this workspace' });
+    }
+
+    // 1. Update local status
+    workspace.assignedToOrganization = true;
+    await workspace.save();
+
+    // 2. Notify main backend
+    // const mainBackendUrl = "https://estrowork.com/api" || 'http://127.0.0.1:4001';
+    const mainBackendUrl = 'http://localhost:4001';
+
+    const ssoSecret = "estrowork-sso-shared-secret-2026-3-5-12";
+
+    if (!ssoSecret) {
+      logger.error('SSO_SECRET not configured');
+      return res.status(500).json({ error: 'SSO configuration missing' });
+    }
+
+    // Generate service-to-service token
+    console.log('DEBUG: Generating token for email:', email);
+    console.log('DEBUG: Using SSO_SECRET length:', ssoSecret?.length || 0);
+
+    const token = jwt.sign(
+      { 
+        email, 
+        containerId: workspace.containerId, 
+        name: workspace.name, 
+        prompt: workspace.prompt, 
+        source: 'estroworkai' 
+      },
+      ssoSecret,
+      { expiresIn: '5m' }
+    );
+
+    const response = await fetch(`${mainBackendUrl}/api/v1/ai-projects/assign`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Service-Token': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        email,
+        containerId: workspace.containerId,
+        name: workspace.name,
+        prompt: workspace.prompt
+      })
+    });
+
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      logger.error('Main backend assignment failed:', result);
+      return res.status(response.status).json({
+        success: false,
+        error: result.error || 'Failed to notify main backend'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Workspace assigned to organization successfully',
+      workspace: {
+        id: workspace._id,
+        assignedToOrganization: workspace.assignedToOrganization
+      }
+    });
+  } catch (error) {
+    logger.error('Assign to organization error:', error);
+    res.status(500).json({ error: 'Failed to assign to organization' });
+  }
+}
+
 module.exports = {
   createWorkspace,
   startAgent,
@@ -341,4 +430,5 @@ module.exports = {
   validateWorkspace,
   autoFixWorkspace,
   getServerLogs,
+  assignToOrganization,
 };

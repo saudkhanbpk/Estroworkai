@@ -19,6 +19,10 @@ const workspaceSchema = new mongoose.Schema({
     type: String,
     default: null,
   },
+  assignedToOrganization: {
+    type: Boolean,
+    default: false
+  },
   containerName: {
     type: String,
     default: null,
@@ -29,12 +33,12 @@ const workspaceSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'creating', 'running', 'stopped','ready', 'error', 'destroyed'],
+    enum: ['pending', 'creating', 'running', 'stopped', 'ready', 'error', 'destroyed'],
     default: 'pending',
   },
   files: [{
     path: String,
-    type: { type: String, enum: ['file','files', 'directory'] },
+    type: { type: String, enum: ['file', 'files', 'directory'] },
     lastModified: Date,
   }],
   agentLogs: [{

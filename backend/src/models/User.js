@@ -20,7 +20,7 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['user', 'admin'],
+    enum: ['user', 'admin', 'employee', 'manager', 'superadmin', 'client', 'talent', 'job_client', 'hr', 'marketer'],
     default: 'user',
   },
   createdAt: {
@@ -36,9 +36,16 @@ const userSchema = new mongoose.Schema({
 // Hash password before saving
 userSchema.pre('save', async function (next) {
   if (!this.isModified('passwordHash')) return next();
+  
+  // If it's already a bcrypt hash (starts with $2a$ or $2b$), don't hash it again
+  if (this.passwordHash && (this.passwordHash.startsWith('$2a$') || this.passwordHash.startsWith('$2b$'))) {
+    return next();
+  }
+  
   this.passwordHash = await bcrypt.hash(this.passwordHash, 12);
   next();
 });
+
 
 // Compare password method
 userSchema.methods.comparePassword = async function (candidatePassword) {

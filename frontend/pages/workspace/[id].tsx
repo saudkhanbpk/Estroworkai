@@ -19,12 +19,14 @@ import {
   Maximize2,
   Minimize2,
   PanelBottomClose,
-  PanelBottom
+  PanelBottom,
+  Building,
+  Check
 } from 'lucide-react';
 import FileTree from '../../components/FileTree';
 import Preview from '../../components/Preview';
 import api, { getChatMessages, addChatMessage } from '../../services/api';
-import { useWorkspaceStore } from '../../services/store';
+import { useWorkspaceStore, useAuthStore } from '../../services/store';
 import websocket from '../../services/websocket';
 
 // Dynamic import for Monaco Editor (no SSR)
@@ -55,9 +57,11 @@ export default function WorkspacePage() {
   const [terminalHeight, setTerminalHeight] = useState(200);
   const [fileContent, setFileContent] = useState('');
   const [originalContent, setOriginalContent] = useState('');
+  const { user } = useAuthStore();
   const [loading, setLoading] = useState(false);
   const [fileLoading, setFileLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isAssigning, setIsAssigning] = useState(false);
   const [previewKey, setPreviewKey] = useState(0);
 
   // Chat states
@@ -485,6 +489,28 @@ export default function WorkspacePage() {
     setPreviewKey(prev => prev + 1);
   };
 
+  const handleAssignToOrganization = async () => {
+    if (!id || isAssigning || workspace?.assignedToOrganization) return;
+
+    setIsAssigning(true);
+    try {
+      const result = await api.assignToOrganization(id as string);
+      if (result.success) {
+        // Update local workspace state
+        if (workspace) {
+          setWorkspace({
+            ...workspace,
+            assignedToOrganization: true
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Failed to assign to organization:', error);
+    } finally {
+      setIsAssigning(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="h-screen flex items-center justify-center bg-[#0d1117]">
@@ -504,36 +530,53 @@ export default function WorkspacePage() {
       <header className="h-12 bg-[#161b22] border-b border-[#30363d] flex items-center justify-between px-4">
         <div className="flex items-center gap-4">
           <h1 className="font-semibold text-white">{workspace?.name || 'Workspace'}</h1>
-          <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium ${
-            agentStatus === 'running' ? 'bg-blue-500/20 text-blue-400' :
+          <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium ${agentStatus === 'running' ? 'bg-blue-500/20 text-blue-400' :
             agentStatus === 'completed' ? 'bg-green-500/20 text-green-400' :
-            agentStatus === 'error' ? 'bg-red-500/20 text-red-400' :
-            'bg-gray-700/50 text-gray-400'
-          }`}>
+              agentStatus === 'error' ? 'bg-red-500/20 text-red-400' :
+                'bg-gray-700/50 text-gray-400'
+            }`}>
             <Sparkles className={`w-3.5 h-3.5 ${agentStatus === 'running' ? 'animate-pulse' : ''}`} />
             {agentStatus === 'running' ? 'AI Working...' :
-             agentStatus === 'completed' ? 'Ready' :
-             agentStatus === 'error' ? 'Error' : 'Idle'}
+              agentStatus === 'completed' ? 'Ready' :
+                agentStatus === 'error' ? 'Error' : 'Idle'}
           </div>
         </div>
 
         <div className="flex items-center gap-2">
           {/* View Toggle */}
           <div className="flex bg-[#21262d] rounded-lg p-0.5">
+            {user?.role === 'client' && (
+              <button
+                onClick={handleAssignToOrganization}
+                disabled={isAssigning || workspace?.assignedToOrganization}
+                className={`px-3 py-1.5 rounded-md text-sm flex items-center gap-2 transition-colors ${workspace?.assignedToOrganization
+                  ? 'bg-green-500/10 text-green-400 cursor-default'
+                  : 'text-gray-400 hover:text-white hover:bg-[#30363d]'
+                  }`}
+              >
+                {isAssigning ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : workspace?.assignedToOrganization ? (
+                  <Check className="w-4 h-4" />
+                ) : (
+                  <Building className="w-4 h-4" />
+                )}
+                {workspace?.assignedToOrganization ? 'Assigned' : 'Assign to organization'}
+              </button>
+            )}
+
             <button
               onClick={() => setActiveView('code')}
-              className={`px-3 py-1.5 rounded-md text-sm flex items-center gap-2 transition-colors ${
-                activeView === 'code' ? 'bg-[#30363d] text-white' : 'text-gray-400 hover:text-white'
-              }`}
+              className={`px-3 py-1.5 rounded-md text-sm flex items-center gap-2 transition-colors ${activeView === 'code' ? 'bg-[#30363d] text-white' : 'text-gray-400 hover:text-white'
+                }`}
             >
               <Code className="w-4 h-4" />
               Code
             </button>
             <button
               onClick={() => setActiveView('preview')}
-              className={`px-3 py-1.5 rounded-md text-sm flex items-center gap-2 transition-colors ${
-                activeView === 'preview' ? 'bg-[#30363d] text-white' : 'text-gray-400 hover:text-white'
-              }`}
+              className={`px-3 py-1.5 rounded-md text-sm flex items-center gap-2 transition-colors ${activeView === 'preview' ? 'bg-[#30363d] text-white' : 'text-gray-400 hover:text-white'
+                }`}
             >
               <Eye className="w-4 h-4" />
               Preview
@@ -702,9 +745,8 @@ export default function WorkspacePage() {
             <div className="flex items-center gap-4">
               <button
                 onClick={() => setShowTerminal(!showTerminal)}
-                className={`flex items-center gap-1.5 text-xs transition-colors ${
-                  showTerminal ? 'text-blue-400' : 'text-gray-400 hover:text-gray-300'
-                }`}
+                className={`flex items-center gap-1.5 text-xs transition-colors ${showTerminal ? 'text-blue-400' : 'text-gray-400 hover:text-gray-300'
+                  }`}
               >
                 {showTerminal ? <PanelBottomClose className="w-4 h-4" /> : <PanelBottom className="w-4 h-4" />}
                 Terminal
@@ -748,28 +790,26 @@ export default function WorkspacePage() {
             ) : (
               chatMessages.map((msg, i) => (
                 <div key={i} className={`flex gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 ${
-                    msg.role === 'user' ? 'bg-blue-600' : 'bg-[#21262d]'
-                  }`}>
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === 'user' ? 'bg-blue-600' : 'bg-[#21262d]'
+                    }`}>
                     {msg.role === 'user' ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
                   </div>
 
                   <div className={`max-w-[85%] ${msg.role === 'user' ? 'text-right' : ''}`}>
-                    <div className={`rounded-lg px-3 py-2 text-sm ${
-                      msg.role === 'user'
-                        ? 'bg-blue-600 text-white'
-                        : msg.type === 'error'
-                          ? 'bg-red-500/10 text-red-300 border border-red-500/20'
-                          : msg.type === 'success'
-                            ? 'bg-green-500/10 text-green-300 border border-green-500/20'
-                            : msg.type === 'files'
-                              ? 'bg-[#161b22] border border-[#30363d]'
-                              : msg.type === 'files_updated'
-                                ? 'bg-[#161b22] border border-blue-500/30'
-                                : msg.type === 'command'
-                                  ? 'bg-yellow-500/10 text-yellow-300 border border-yellow-500/20'
-                                  : 'bg-[#21262d]'
-                    }`}>
+                    <div className={`rounded-lg px-3 py-2 text-sm ${msg.role === 'user'
+                      ? 'bg-blue-600 text-white'
+                      : msg.type === 'error'
+                        ? 'bg-red-500/10 text-red-300 border border-red-500/20'
+                        : msg.type === 'success'
+                          ? 'bg-green-500/10 text-green-300 border border-green-500/20'
+                          : msg.type === 'files'
+                            ? 'bg-[#161b22] border border-[#30363d]'
+                            : msg.type === 'files_updated'
+                              ? 'bg-[#161b22] border border-blue-500/30'
+                              : msg.type === 'command'
+                                ? 'bg-yellow-500/10 text-yellow-300 border border-yellow-500/20'
+                                : 'bg-[#21262d]'
+                      }`}>
                       {msg.type === 'files' && (
                         <div>
                           <div className="flex items-center gap-2 mb-2 text-green-400 text-xs font-medium">

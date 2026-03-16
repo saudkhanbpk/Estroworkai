@@ -95,6 +95,11 @@ export const destroyWorkspace = async (id: string) => {
   return response.data;
 };
 
+export const assignToOrganization = async (id: string) => {
+  const response = await api.post(`/workspace/${id}/assign`);
+  return response.data;
+};
+
 // Files
 export const listFiles = async (workspaceId: string, path?: string) => {
   const response = await api.get(`/file/${workspaceId}/list`, {
@@ -193,6 +198,7 @@ export default {
   startAgent,
   runPrompt,
   destroyWorkspace,
+  assignToOrganization,
   listFiles,
   readFile,
   writeFile,

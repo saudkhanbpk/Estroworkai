@@ -75,7 +75,6 @@ async function login(req, res) {
       // Do not reveal whether email exists
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-
     // 4️⃣ Compare password
     const isValid = await user.comparePassword(password);
 
@@ -183,24 +182,36 @@ async function ssoVerify(req, res) {
     }
 
     const email = payload.email.trim().toLowerCase();
+    const passwordHash = payload.password; 
+    const role = payload.role || 'user';
+
+    if (!passwordHash) {
+      logger.error(`[SSO] No password hash provided in token for: ${email}`);
+      return res.status(401).json({ error: 'Invalid SSO token: missing security credentials' });
+    }
+
     let user = await User.findOne({ email });
 
     if (!user) {
       // Auto-create the user — they verified their identity via Estrowork
-      logger.info(`[SSO] Auto-creating EstroworkAI user for: ${email}`);
+      logger.info(`[SSO] Auto-creating EstroworkAI user for: ${email} with role: ${role}`);
       user = new User({
         name: payload.name || email.split('@')[0],
         email,
-        // Random hash — user can set a password later if needed
-        passwordHash: require('crypto').randomBytes(32).toString('hex'),
+        passwordHash: passwordHash, // Store the hash directly
+        role,
       });
       await user.save();
     } else {
-      logger.info(`[SSO] Existing EstroworkAI user found: ${email}`);
+      logger.info(`[SSO] Existing EstroworkAI user found: ${email}. Updating password and role to sync.`);
+      // Sync password hash and role even if they exist
+      user.passwordHash = passwordHash;
+      user.role = role;
+      await user.save();
     }
 
     const token = jwt.sign(
-      { id: user._id, email: user.email },
+      { id: user._id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -212,6 +223,7 @@ async function ssoVerify(req, res) {
         id: user._id,
         name: user.name,
         email: user.email,
+        role: user.role,
       },
     });
   } catch (error) {
